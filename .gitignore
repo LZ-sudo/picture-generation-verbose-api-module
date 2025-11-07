@@ -1,0 +1,9 @@
+.env
+myenv/
+__pycache__/
+audio_input/
+audio_output/
+text_input/
+text_output/
+test_images/
+results/
