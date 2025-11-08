@@ -10,3 +10,5 @@ timm
 webcolors
 elevenlabs
 python-dotenv
+google-genai
+dotenv
