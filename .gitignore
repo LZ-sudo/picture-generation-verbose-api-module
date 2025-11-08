@@ -8,3 +8,4 @@ text_output/
 test_images_segmentation/
 test_images_editing/
 results/
+intermediate_files/
