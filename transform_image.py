@@ -86,7 +86,7 @@ class ImageTransformer:
                 segmentation_result = self._segment_item(current_image, issue['item'], i)
                 
                 if not segmentation_result:
-                    print(f"⚠ Warning: Segmentation failed for {issue['item']}, skipping...")
+                    print(f"[WARN] Segmentation failed for {issue['item']}, skipping...")
                     continue
                 
                 # Step 2: Edit with Nano Banana
@@ -99,23 +99,23 @@ class ImageTransformer:
                 )
                 
                 if not edited_image:
-                    print(f"⚠ Warning: Nano Banana edit failed for {issue['item']}, skipping...")
+                    print(f"[WARN] Nano Banana edit failed for {issue['item']}, skipping...")
                     continue
                 
                 # Step 3: Update current image for next iteration
                 print(f"\n[Step 3/3] Updating current image state...")
                 current_image = edited_image
-                print(f"✓ Issue {i} completed successfully")
+                print(f"[OK] Issue {i} completed successfully")
             
             # Copy final result to output location
             print(f"Finalizing...")
             shutil.copy(current_image, self.final_output)
-            print(f"✓ Final edited image saved: {self.final_output}")
-            
+            print(f"[OK] Final edited image saved: {self.final_output}")
+
             # Cleanup intermediate files
             self._cleanup()
-            
-            print(f"✓ Transformation complete!")
+
+            print(f"[OK] Transformation complete!")
             print(f"Processed: {len(self.issues)} issues")
             print(f"Output: {self.final_output}")
             print()
