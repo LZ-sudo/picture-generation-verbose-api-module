@@ -1,14 +1,20 @@
-torch>=2.0.0
-torchvision>=0.15.0
+--extra-index-url https://download.pytorch.org/whl/cu124
+torch==2.6.0+cu124
+torchvision==0.21.0+cu124
 opencv-python>=4.7.0
 numpy>=1.24.0
 Pillow>=9.5.0
 segment-anything-hq>=0.3.0
 transformers>=4.35.0
 einops
-timm  
+timm
 webcolors
 elevenlabs
 python-dotenv
 google-genai
-dotenv
+
+# API server dependencies
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+pydantic==2.10.5
+python-multipart

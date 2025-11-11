@@ -50,9 +50,10 @@ class ImageTransformer:
         self.issues = self.editing_data.get('issues', [])
         if not self.issues:
             raise ValueError("No issues found in prompts JSON")
-        
-        # Setup directories
-        self.intermediate_dir = Path('intermediate_files')
+
+        # Setup directories - create relative to this script's location, not CWD
+        script_dir = Path(__file__).parent
+        self.intermediate_dir = script_dir / 'intermediate_files'
         self.intermediate_dir.mkdir(exist_ok=True)
         
         # Setup output path
@@ -62,14 +63,12 @@ class ImageTransformer:
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             self.final_output = Path(f"{self.original_image.stem}_transformed_{timestamp}.jpg")
         
-        print(f"{'='*70}")
+    
         print(f"Image Transformation Pipeline")
-        print(f"{'='*70}")
         print(f"Original image: {self.original_image}")
         print(f"Prompts file: {self.prompts_json}")
         print(f"Issues to process: {len(self.issues)}")
         print(f"Final output: {self.final_output}")
-        print(f"{'='*70}\n")
     
     def transform(self):
         """Execute the sequential transformation pipeline."""
@@ -80,9 +79,7 @@ class ImageTransformer:
         try:
             # Process each issue sequentially
             for i, issue in enumerate(self.issues, start=1):
-                print(f"\n{'─'*70}")
                 print(f"Processing Issue {i}/{len(self.issues)}: {issue['item']}")
-                print(f"{'─'*70}")
                 
                 # Step 1: Segment the item
                 print(f"\n[Step 1/3] Segmenting {issue['item']}...")
@@ -111,18 +108,14 @@ class ImageTransformer:
                 print(f"✓ Issue {i} completed successfully")
             
             # Copy final result to output location
-            print(f"\n{'='*70}")
             print(f"Finalizing...")
-            print(f"{'='*70}")
             shutil.copy(current_image, self.final_output)
             print(f"✓ Final edited image saved: {self.final_output}")
             
             # Cleanup intermediate files
             self._cleanup()
             
-            print(f"\n{'='*70}")
             print(f"✓ Transformation complete!")
-            print(f"{'='*70}")
             print(f"Processed: {len(self.issues)} issues")
             print(f"Output: {self.final_output}")
             print()
@@ -130,11 +123,11 @@ class ImageTransformer:
             return self.final_output
             
         except KeyboardInterrupt:
-            print("\n\n⚠ Process interrupted by user")
+            print("Process interrupted by user")
             self._cleanup()
             sys.exit(1)
         except Exception as e:
-            print(f"\n✗ Error during transformation: {e}")
+            print(f"Error during transformation: {e}")
             import traceback
             traceback.print_exc()
             self._cleanup()
@@ -175,18 +168,30 @@ class ImageTransformer:
             env = os.environ.copy()
             env['PYTHONIOENCODING'] = 'utf-8'
 
-            # Call segment_image.py script
+            # Build absolute path to segment_image.py relative to this script
+            script_dir = Path(__file__).parent
+            segment_script = script_dir / 'interior-segment-labeler' / 'segment_image.py'
+
+            if not segment_script.exists():
+                print(f"  [ERROR] Segment script not found: {segment_script}")
+                return None
+
+            # Call segment_image.py script with correct working directory
+            # Use absolute paths for all arguments
+            # Use DEVNULL to prevent deadlock from output buffer filling
             result = subprocess.run(
                 [
                     sys.executable,
-                    'interior-segment-labeler/segment_image.py',
-                    str(intermediate_image),
+                    str(segment_script),  # Use absolute path
+                    str(intermediate_image.resolve()),  # Absolute path to input
                     '--output',
-                    str(seg_output_dir)
+                    str(seg_output_dir.resolve())  # Absolute path to output dir
                 ],
-                capture_output=True,
+                stdout=subprocess.DEVNULL,  # Discard stdout to prevent buffer deadlock
+                stderr=subprocess.PIPE,  # Capture only stderr for errors
                 text=True,
                 env=env,  # Use modified environment
+                cwd=str(script_dir),  # Run in picture-generation directory for relative imports
                 timeout=120
             )
 
@@ -235,11 +240,12 @@ class ImageTransformer:
         """
         # Create prompt JSON
         nb_prompt_path = self.intermediate_dir / f"nb_prompt_{iteration:02d}.json"
-        enhanced_prompt = f"Based on the highlighted yellow areas in the reference image: {recommendation}"
+        enhanced_prompt = f"Based on the highlighted areas in the reference image: {recommendation}"
 
+        # Use absolute paths for the reference image
         nb_prompt_data = {
             "prompt": enhanced_prompt,
-            "reference_image": str(highlight_image)
+            "reference_image": str(highlight_image.resolve())  # Convert to absolute path
         }
 
         with open(nb_prompt_path, 'w') as f:
@@ -256,18 +262,30 @@ class ImageTransformer:
             env = os.environ.copy()
             env['PYTHONIOENCODING'] = 'utf-8'
 
-            # Call nanobanana_edit.py script
+            # Build absolute path to nanobanana_edit.py relative to this script
+            script_dir = Path(__file__).parent
+            nanobanana_script = script_dir / 'nanobanana_edit.py'
+
+            if not nanobanana_script.exists():
+                print(f"  [ERROR] Nanobanana script not found: {nanobanana_script}")
+                return None
+
+            # Call nanobanana_edit.py script with correct working directory
+            # Use absolute paths for all arguments
+            # Use DEVNULL to prevent deadlock from output buffer filling
             result = subprocess.run(
                 [
                     sys.executable,
-                    'nanobanana_edit.py',
-                    str(original_image),
-                    str(nb_prompt_path),
-                    str(edited_path)
+                    str(nanobanana_script),  # Use absolute path
+                    str(original_image.resolve()),  # Absolute path to input image
+                    str(nb_prompt_path.resolve()),  # Absolute path to prompt JSON
+                    str(edited_path.resolve())  # Absolute path to output image
                 ],
-                capture_output=True,
+                stdout=subprocess.DEVNULL,  # Discard stdout to prevent buffer deadlock
+                stderr=subprocess.PIPE,  # Capture only stderr for errors
                 text=True,
                 env=env,
+                cwd=str(script_dir),  # Run in picture-generation directory for relative imports
                 timeout=180
             )
 
@@ -293,16 +311,16 @@ class ImageTransformer:
     def _cleanup(self):
         """Clean up intermediate files."""
         if self.keep_intermediates:
-            print(f"\n⚠ Keeping intermediate files for debugging: {self.intermediate_dir}/")
+            print(f"Keeping intermediate files for debugging: {self.intermediate_dir}/")
             return
 
         print(f"\nCleaning up intermediate files...")
         try:
             if self.intermediate_dir.exists():
                 shutil.rmtree(self.intermediate_dir)
-                print(f"✓ Deleted: {self.intermediate_dir}/")
+                print(f"Deleted: {self.intermediate_dir}/")
         except Exception as e:
-            print(f"⚠ Warning: Could not clean up intermediate files: {e}")
+            print(f"Warning: Could not clean up intermediate files: {e}")
 
 
 def main():
