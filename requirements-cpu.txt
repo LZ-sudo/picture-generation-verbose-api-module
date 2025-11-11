@@ -1,8 +1,6 @@
-# CUDA version (for systems with NVIDIA GPU)
-# For CPU-only systems, use: pip install -r requirements-cpu.txt
---extra-index-url https://download.pytorch.org/whl/cu124
-torch==2.6.0+cu124
-torchvision==0.21.0+cu124
+# CPU-only version (for systems without CUDA)
+torch==2.6.0
+torchvision==0.21.0
 opencv-python>=4.7.0
 numpy>=1.24.0
 Pillow>=9.5.0
