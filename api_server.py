@@ -27,7 +27,7 @@ if env_path.exists():
 
 # Initialize FastAPI app
 app = FastAPI(
-    title="Picture Generation Service",
+    title="Picture Generation and Verbose Service",
     description="Image transformation based on JSON recommendations",
     version="1.0.0"
 )
@@ -45,6 +45,22 @@ class HealthResponse(BaseModel):
     status: str
     service: str
     version: str
+
+
+class SpeechToTextResponse(BaseModel):
+    """Response model for speech-to-text"""
+    success: bool
+    transcript: Optional[str] = None
+    transcript_file: Optional[str] = None
+    json_file: Optional[str] = None
+    error: Optional[str] = None
+
+
+class TextToSpeechResponse(BaseModel):
+    """Response model for text-to-speech"""
+    success: bool
+    audio_file_path: Optional[str] = None
+    error: Optional[str] = None
 
 
 @app.get("/", response_model=HealthResponse)
@@ -242,12 +258,267 @@ async def download_transformed_image(filename: str):
     )
 
 
+@app.post("/speech-to-text", response_model=SpeechToTextResponse)
+async def speech_to_text_endpoint(
+    file: UploadFile = File(...)
+):
+    """
+    Transcribe an audio file to text using ElevenLabs.
+
+    Args:
+        file: Audio file (MP3 format)
+
+    Returns:
+        Transcript text and paths to output files
+    """
+    temp_audio = None
+
+    try:
+        # Setup temp directory
+        import tempfile
+        system_temp = Path(tempfile.gettempdir())
+        temp_dir = system_temp / "hks_spatial_stt"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+
+        # Output directory for transcripts
+        output_dir = temp_dir / "text_output"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S%f")
+
+        # Save uploaded audio file
+        temp_audio = temp_dir / f"audio_{timestamp}_{file.filename}"
+        with open(temp_audio, "wb") as f:
+            content = await file.read()
+            f.write(content)
+
+        print(f"Speech-to-text request received:")
+        print(f"  Input: {temp_audio}")
+
+        # Verify ElevenLabs API key
+        api_key = os.getenv("ELEVENLABS_API_KEY")
+        if not api_key:
+            raise ValueError("ELEVENLABS_API_KEY not configured")
+
+        # Import ElevenLabs client
+        from elevenlabs.client import ElevenLabs
+        import re
+
+        # Initialize ElevenLabs client
+        elevenlabs = ElevenLabs(api_key=api_key)
+
+        # Transcribe audio
+        with open(temp_audio, "rb") as audio_file:
+            transcription = elevenlabs.speech_to_text.convert(
+                file=audio_file,
+                model_id="scribe_v1",
+                tag_audio_events=True,
+                language_code="eng",
+                diarize=True,
+            )
+
+        # Generate output filename
+        input_filename = Path(temp_audio).stem
+        transcript_file = output_dir / f"{input_filename}_transcript.txt"
+
+        # Save transcription to file
+        with open(transcript_file, "w", encoding="utf-8") as f:
+            f.write(str(transcription))
+
+        print(f"Transcription completed!")
+        print(f"Output saved to: {transcript_file}")
+
+        # Extract text content and save as JSON
+        with open(transcript_file, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        # Extract the text field using regex
+        match = re.search(r'text="(.*?)"\s+words=', content)
+
+        if match:
+            text_content = match.group(1)
+        else:
+            text_content = str(transcription)
+
+        # Create JSON output
+        json_data = {
+            "transcript": text_content
+        }
+
+        # Generate JSON filename
+        json_file = transcript_file.with_suffix('.json')
+
+        # Save to JSON file
+        with open(json_file, "w", encoding="utf-8") as f:
+            json.dump(json_data, f, indent=2, ensure_ascii=False)
+
+        print(f"JSON output saved to: {json_file}")
+
+        return {
+            "success": True,
+            "transcript": text_content,
+            "transcript_file": str(transcript_file),
+            "json_file": str(json_file)
+        }
+
+    except Exception as e:
+        import traceback
+        error_detail = f"{str(e)}\n{traceback.format_exc()}"
+        print(f"ERROR in speech-to-text endpoint: {error_detail}")
+        return {
+            "success": False,
+            "error": error_detail
+        }
+
+    finally:
+        # Clean up temp audio file
+        if temp_audio and temp_audio.exists():
+            try:
+                temp_audio.unlink()
+            except:
+                pass
+
+
+@app.post("/text-to-speech", response_model=TextToSpeechResponse)
+async def text_to_speech_endpoint(
+    text: str = Body(..., embed=True)
+):
+    """
+    Convert text to speech using ElevenLabs.
+
+    Args:
+        text: Text content to convert to speech
+
+    Returns:
+        Path to generated audio file
+    """
+    try:
+        # Setup temp directory
+        import tempfile
+        system_temp = Path(tempfile.gettempdir())
+        temp_dir = system_temp / "hks_spatial_tts"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+
+        # Output directory for audio
+        output_dir = temp_dir / "audio_output"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S%f")
+
+        print(f"Text-to-speech request received:")
+        print(f"  Text: {text[:100]}...")
+
+        # Verify ElevenLabs API key
+        api_key = os.getenv("ELEVENLABS_API_KEY")
+        if not api_key:
+            raise ValueError("ELEVENLABS_API_KEY not configured")
+
+        # Import ElevenLabs client
+        from elevenlabs.client import ElevenLabs
+
+        # Initialize ElevenLabs client
+        elevenlabs = ElevenLabs(api_key=api_key)
+
+        # Convert text to speech
+        audio = elevenlabs.text_to_speech.convert(
+            text=text,
+            voice_id="19STyYD15bswVz51nqLf",
+            model_id="eleven_turbo_v2_5",
+            output_format="mp3_44100_96",
+            voice_settings={
+                "stability": 0.5,
+                "similarity_boost": 0.8,
+                "speed": 0.85
+            }
+        )
+
+        # Generate output filename
+        output_file = output_dir / f"audio_{timestamp}.mp3"
+
+        # Save audio to file
+        with open(output_file, "wb") as f:
+            for chunk in audio:
+                f.write(chunk)
+
+        print(f"Audio generation completed!")
+        print(f"Output saved to: {output_file}")
+
+        return {
+            "success": True,
+            "audio_file_path": str(output_file)
+        }
+
+    except Exception as e:
+        import traceback
+        error_detail = f"{str(e)}\n{traceback.format_exc()}"
+        print(f"ERROR in text-to-speech endpoint: {error_detail}")
+        return {
+            "success": False,
+            "error": error_detail
+        }
+
+
+@app.get("/download-audio/{filename}")
+async def download_audio_file(filename: str):
+    """
+    Download a generated audio file.
+
+    Args:
+        filename: Name of the audio file
+
+    Returns:
+        File response with the audio
+    """
+    import tempfile
+    system_temp = Path(tempfile.gettempdir())
+    temp_dir = system_temp / "hks_spatial_tts" / "audio_output"
+    file_path = temp_dir / filename
+
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
+
+    return FileResponse(
+        path=str(file_path),
+        media_type="audio/mpeg",
+        filename=filename
+    )
+
+
+@app.get("/download-transcript/{filename}")
+async def download_transcript_file(filename: str):
+    """
+    Download a transcript file (text or json).
+
+    Args:
+        filename: Name of the transcript file
+
+    Returns:
+        File response with the transcript
+    """
+    import tempfile
+    system_temp = Path(tempfile.gettempdir())
+    temp_dir = system_temp / "hks_spatial_stt" / "text_output"
+    file_path = temp_dir / filename
+
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
+
+    # Determine media type based on extension
+    media_type = "application/json" if filename.endswith(".json") else "text/plain"
+
+    return FileResponse(
+        path=str(file_path),
+        media_type=media_type,
+        filename=filename
+    )
+
+
 if __name__ == "__main__":
     # Get configuration from environment
     host = os.getenv("IMAGE_GEN_SERVICE_HOST", "127.0.0.1")
     port = int(os.getenv("IMAGE_GEN_SERVICE_PORT", "8002"))
 
-    print(f"Starting Picture Generation service on {host}:{port}")
+    print(f"Starting Picture Generation and Verbose Service on {host}:{port}")
     print("Using asyncio subprocess to avoid threading deadlocks")
     print("Long-running transformations supported (30+ minutes)")
 
