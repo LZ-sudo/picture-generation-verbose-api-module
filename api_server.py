@@ -333,11 +333,17 @@ async def speech_to_text_endpoint(
             content = f.read()
 
         # Extract the text field using regex
-        match = re.search(r'text="(.*?)"\s+words=', content)
+        # Try single quotes first (ElevenLabs uses single quotes)
+        match = re.search(r"text='(.*?)'\s+words=", content)
+
+        if not match:
+            # Fallback: try double quotes
+            match = re.search(r'text="(.*?)"\s+words=', content)
 
         if match:
             text_content = match.group(1)
         else:
+            # If regex fails, return the full transcription object as fallback
             text_content = str(transcription)
 
         # Create JSON output
