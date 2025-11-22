@@ -69,11 +69,14 @@ def edit_image_with_prompt(image_path, prompt, reference_image_path=None):
     # Add prompt at the end
     contents.append(prompt)
 
-    # Call the API to edit the image
+    # Call the API to edit the image using Gemini 3 Pro Image Preview (Nano Banana Pro)
     try:
         response = client.models.generate_content(
-            model="gemini-2.5-flash-image",
+            model="gemini-3-pro-image-preview",
             contents=contents,
+            config=types.GenerateContentConfig(
+                response_modalities=["IMAGE"],  # Only return image, not text
+            )
         )
     except Exception as e:
         raise RuntimeError(f"API call failed: {e}")
