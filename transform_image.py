@@ -151,7 +151,7 @@ class ImageTransformer:
 
         # Create enhanced prompt with item name as object of attention
         # Following the new format: "The object of attention is {item name}. {recommendation}."
-        enhanced_prompt = f"The object of attention is {item_name}. {recommendation}"
+        enhanced_prompt = f"The object of attention is {item_name}. {recommendation}. Keep the perspective of the original image."
 
         # Create prompt JSON (no reference image needed)
         nb_prompt_path = self.intermediate_dir / f"nb_prompt_{iteration:02d}.json"

@@ -250,7 +250,7 @@ async def handle_tts(websocket: WebSocket, elevenlabs, data: dict):
                 text=text,
                 voice_id="19STyYD15bswVz51nqLf",
                 model_id="eleven_flash_v2_5",  # Flash model - fastest and cheapest
-                output_format="mp3_22050_32",  # Lower quality = fewer credits, change to mp3_44100_96 for prod
+                output_format="mp3_44100_96",  # Lower quality = fewer credits, change to mp3_44100_96 for prod
                 voice_settings={
                     "stability": 0.5,
                     "similarity_boost": 0.75,  # Slightly reduced for flash
