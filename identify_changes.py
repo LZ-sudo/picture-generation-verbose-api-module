@@ -13,9 +13,11 @@ Usage:
 import sys
 import json
 import argparse
-import subprocess
-import shutil
 from pathlib import Path
+
+# Import Florence2Detector from the shared module
+sys.path.insert(0, str(Path(__file__).parent / "interior-segment-labeler"))
+from florence2_detector import Florence2Detector, filter_detections
 
 
 def extract_recommendations(analysis_data):
@@ -41,99 +43,44 @@ def extract_recommendations(analysis_data):
     return recommendations
 
 
-def run_label_changes(image_path, recommendation_text, temp_image_path, output_dir):
+def run_detection(detector, image_path, recommendation_text):
     """
-    Run label_changes.py with a single recommendation.
+    Run Florence-2 detection directly using the detector instance.
 
     Args:
-        image_path: Original image path
+        detector: Florence2Detector instance (reused across calls)
+        image_path: Path to input image
         recommendation_text: Recommendation text to detect
-        temp_image_path: Temporary copy of image (for prompt file)
-        output_dir: Directory for output files
 
     Returns:
         Dictionary with detection results, or None if detection failed
     """
-    temp_image_path = Path(temp_image_path).resolve()
-    output_dir = Path(output_dir).resolve()
-
-    # Create prompt file next to the temporary image
-    # label_changes.py expects {image_stem}_prompt.json next to the image
-    temp_prompt = temp_image_path.parent / f"{temp_image_path.stem}_prompt.json"
-    prompt_data = {
-        "prompts": [recommendation_text]
-    }
-
-    with open(temp_prompt, 'w') as f:
-        json.dump(prompt_data, f, indent=2)
-
-    print(f"  > Created prompt file: {temp_prompt.name}")
-    print(f"    Prompt content: {recommendation_text}")
-
-    # Prepare command to run label_changes.py
-    label_changes_script = Path(__file__).parent / "interior-segment-labeler" / "label_changes.py"
-
-    if not label_changes_script.exists():
-        print(f"  [ERROR] label_changes.py not found at {label_changes_script}")
-        return None
-
-    cmd = [
-        sys.executable,
-        str(label_changes_script),
-        str(temp_image_path),  # Already resolved to absolute path
-        "--output-dir", str(output_dir),  # Already resolved to absolute path
-        "--no-image",  # Skip image generation
-        "--format", "normalized"  # Use normalized coordinates for frontend
-    ]
-
     try:
-        # Run label_changes.py
         print(f"  > Running detection...")
+        print(f"    Prompt content: {recommendation_text}")
 
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            check=False,  # Don't raise on non-zero exit
-            cwd=str(label_changes_script.parent)
-        )
+        # Parse the recommendation text into vocabulary
+        # The recommendation is the text we want to detect
+        vocabulary = [recommendation_text]
 
-        # Debug output
-        print(f"    Return code: {result.returncode}")
-        if result.stdout:
-            print(f"    STDOUT:\n{result.stdout}")
-        if result.stderr:
-            print(f"    STDERR:\n{result.stderr}")
+        # Run detection directly
+        result = detector.detect(image_path, vocabulary)
 
-        # Check for errors
-        if result.returncode != 0:
-            if result.stderr:
-                print(f"  [ERROR] {result.stderr.strip()}")
-            if "No objects detected" in result.stdout or "No valid objects" in result.stdout:
-                print(f"  [SKIP] No objects detected for this recommendation")
+        # Filter detections to remove action words and duplicates
+        if result['count'] > 0:
+            filtered_detections = filter_detections(result['detections'], iou_threshold=0.7)
+            result['detections'] = filtered_detections
+            result['count'] = len(filtered_detections)
+
+        if result['count'] == 0:
+            print(f"  [SKIP] No objects detected for this recommendation")
             return None
 
-        # Read the generated detections JSON
-        detections_file = output_dir / f"{temp_image_path.stem}_detections.json"
-
-        print(f"    Looking for detections file: {detections_file}")
-        print(f"    File exists: {detections_file.exists()}")
-
-        if detections_file.exists():
-            with open(detections_file, 'r') as f:
-                detections_data = json.load(f)
-            print(f"    Loaded detections: {detections_data.get('count', 0)} objects")
-            return detections_data
-        else:
-            print(f"  [!] Warning: Detection file not generated")
-            # List files in output directory for debugging
-            print(f"    Files in output dir:")
-            for f in output_dir.iterdir():
-                print(f"      - {f.name}")
-            return None
+        print(f"  [OK] Found {result['count']} detection(s)")
+        return result
 
     except Exception as e:
-        print(f"  [ERROR] Unexpected error: {e}")
+        print(f"  [ERROR] Unexpected error during detection: {e}")
         import traceback
         traceback.print_exc()
         return None
@@ -176,21 +123,11 @@ def process_analysis(analysis_path, image_path, output_path=None, output_dir=Non
 
     print(f"Found {total} recommendations to process\n")
 
-    # Create intermediate_files_identification directory
-    if output_dir:
-        base_dir = Path(output_dir)
-    else:
-        base_dir = image_path.parent
-
-    intermediate_dir = base_dir / "intermediate_files_identification"
-    intermediate_dir.mkdir(parents=True, exist_ok=True)
-
-    # Copy image to intermediate directory for processing
-    temp_image_name = f"_temp_{image_path.name}"
-    temp_image_path = intermediate_dir / temp_image_name
-    shutil.copy2(image_path, temp_image_path)
-
-    print(f"Created temporary workspace: {intermediate_dir}\n")
+    # Initialize Florence-2 detector ONCE for all detections
+    # This is the key optimization - model stays loaded in memory
+    print("Initializing Florence-2 detector (one-time setup)...")
+    detector = Florence2Detector()
+    print(f"[OK] Detector ready. Will process {total} recommendations.\n")
 
     try:
         # Process each recommendation sequentially
@@ -198,12 +135,11 @@ def process_analysis(analysis_path, image_path, output_path=None, output_dir=Non
             print(f"[{idx + 1}/{total}] Processing: {item}")
             print(f"  Recommendation: {recommendation[:60]}{'...' if len(recommendation) > 60 else ''}")
 
-            # Run detection
-            detections = run_label_changes(
+            # Run detection using the shared detector instance
+            detections = run_detection(
+                detector,
                 image_path,
-                recommendation,
-                temp_image_path,
-                intermediate_dir
+                recommendation
             )
 
             if detections and detections.get('count', 0) > 0:
@@ -212,8 +148,8 @@ def process_analysis(analysis_path, image_path, output_path=None, output_dir=Non
                 for det in detections.get('detections', []):
                     bbox_info = {
                         'label': det['label'],
-                        'bbox': det['bbox'],  # Normalized coordinates
-                        'center': det['center'],
+                        'bbox': det['bbox_normalized'],  # Normalized coordinates
+                        'center': det['center_normalized'],
                         'confidence': det.get('confidence', 1.0)
                     }
                     bboxes.append(bbox_info)
@@ -238,13 +174,10 @@ def process_analysis(analysis_path, image_path, output_path=None, output_dir=Non
             print()
 
     finally:
-        # Always clean up intermediate directory
-        print(f"\nCleaning up intermediate files...")
-        try:
-            shutil.rmtree(intermediate_dir)
-            print(f"[OK] Removed: {intermediate_dir}")
-        except Exception as e:
-            print(f"[!] Warning: Could not remove intermediate directory: {e}")
+        # Clean up detector to free GPU/CPU memory
+        print(f"\nCleaning up detector...")
+        del detector
+        print(f"[OK] Detector cleaned up")
 
     # Save updated analysis
     if output_path:
