@@ -3,9 +3,12 @@
 Transform Image - Sequential Image Editing Orchestrator
 
 Processes multiple editing recommendations sequentially by:
-1. Segmenting each item from the image
-2. Sending to Nano Banana for editing
+1. Enhancing the prompt with the item name (object of attention)
+2. Sending to Nano Banana Pro (Gemini 3 Pro) for editing
 3. Using the output as input for the next edit
+
+Note: This version uses Gemini 3 Pro Image Preview which can perform
+      intelligent editing without requiring segmentation masks.
 
 Usage:
     python transform_image.py <original_image> <editing_prompts.json> [output_path]
@@ -21,7 +24,7 @@ from datetime import datetime
 
 
 class ImageTransformer:
-    """Orchestrates sequential image editing with segmentation and Nano Banana."""
+    """Orchestrates sequential image editing with Nano Banana Pro (Gemini 3 Pro)."""
     
     def __init__(self, original_image_path, prompts_json_path, output_path=None, keep_intermediates=False):
         """
@@ -72,38 +75,30 @@ class ImageTransformer:
     
     def transform(self):
         """Execute the sequential transformation pipeline."""
-        
+
         # Track current image state (starts with original)
         current_image = self.original_image
-        
+
         try:
             # Process each issue sequentially
             for i, issue in enumerate(self.issues, start=1):
                 print(f"Processing Issue {i}/{len(self.issues)}: {issue['item']}")
-                
-                # Step 1: Segment the item
-                print(f"\n[Step 1/3] Segmenting {issue['item']}...")
-                segmentation_result = self._segment_item(current_image, issue['item'], i)
-                
-                if not segmentation_result:
-                    print(f"[WARN] Segmentation failed for {issue['item']}, skipping...")
-                    continue
-                
-                # Step 2: Edit with Nano Banana
-                print(f"\n[Step 2/3] Applying edit with Nano Banana...")
+
+                # Step 1: Edit with Nano Banana Pro (no segmentation needed)
+                print(f"\n[Step 1/2] Applying edit with Nano Banana Pro...")
                 edited_image = self._edit_with_nanobanana(
-                    segmentation_result['original_image'],
-                    segmentation_result['highlight_image'],
+                    current_image,
+                    issue['item'],
                     issue['recommendation'],
                     i
                 )
-                
+
                 if not edited_image:
-                    print(f"[WARN] Nano Banana edit failed for {issue['item']}, skipping...")
+                    print(f"[WARN] Nano Banana Pro edit failed for {issue['item']}, skipping...")
                     continue
-                
-                # Step 3: Update current image for next iteration
-                print(f"\n[Step 3/3] Updating current image state...")
+
+                # Step 2: Update current image for next iteration
+                print(f"\n[Step 2/2] Updating current image state...")
                 current_image = edited_image
                 print(f"[OK] Issue {i} completed successfully")
             
@@ -133,125 +128,42 @@ class ImageTransformer:
             self._cleanup()
             sys.exit(1)
     
-    def _segment_item(self, image_path, item_name, iteration):
-        """
-        Segment a specific item from the image by calling segment_image.py.
-
-        Args:
-            image_path: Path to current image
-            item_name: Name of item to segment (e.g., "Coffee Table")
-            iteration: Current iteration number
-
-        Returns:
-            Dict with paths to generated files, or None if failed
-        """
-        # Copy current image to intermediate directory
-        intermediate_image = self.intermediate_dir / f"current_{iteration:02d}.jpg"
-        shutil.copy(image_path, intermediate_image)
-
-        # Create segmentation prompt JSON in same directory as image
-        seg_prompt_path = self.intermediate_dir / f"{intermediate_image.stem}_prompt.json"
-        seg_prompt_data = {"prompts": [item_name]}
-
-        with open(seg_prompt_path, 'w') as f:
-            json.dump(seg_prompt_data, f, indent=2)
-
-        print(f"  Created segmentation prompt for '{item_name}'")
-
-        # Setup output directory
-        seg_output_dir = self.intermediate_dir / f"seg_output_{iteration:02d}"
-        seg_output_dir.mkdir(exist_ok=True)
-
-        print(f"  Running segmentation...")
-        try:
-            # Create environment with UTF-8 encoding to prevent Unicode errors
-            env = os.environ.copy()
-            env['PYTHONIOENCODING'] = 'utf-8'
-
-            # Build absolute path to segment_image.py relative to this script
-            script_dir = Path(__file__).parent
-            segment_script = script_dir / 'interior-segment-labeler' / 'segment_image.py'
-
-            if not segment_script.exists():
-                print(f"  [ERROR] Segment script not found: {segment_script}")
-                return None
-
-            # Call segment_image.py script with correct working directory
-            # Use absolute paths for all arguments
-            # Use DEVNULL to prevent deadlock from output buffer filling
-            result = subprocess.run(
-                [
-                    sys.executable,
-                    str(segment_script),  # Use absolute path
-                    str(intermediate_image.resolve()),  # Absolute path to input
-                    '--output',
-                    str(seg_output_dir.resolve())  # Absolute path to output dir
-                ],
-                stdout=subprocess.DEVNULL,  # Discard stdout to prevent buffer deadlock
-                stderr=subprocess.PIPE,  # Capture only stderr for errors
-                text=True,
-                env=env,  # Use modified environment
-                cwd=str(script_dir),  # Run in picture-generation directory for relative imports
-                timeout=120
-            )
-
-            if result.returncode != 0:
-                print(f"  [ERROR] Segmentation failed (return code: {result.returncode})")
-                print(f"  STDERR: {result.stderr}")
-                return None
-
-            # Find generated files
-            image_stem = intermediate_image.stem
-            annotated_path = seg_output_dir / f"{image_stem}_annotated.jpg"
-
-            if not annotated_path.exists():
-                print(f"  [ERROR] Annotated image not found: {annotated_path}")
-                return None
-
-            print(f"  [OK] Segmentation complete")
-            print(f"    - Annotated: {annotated_path}")
-            print(f"    - Using original: {intermediate_image}")
-
-            return {
-                'original_image': intermediate_image,  # Use the copy we made
-                'highlight_image': annotated_path,      # Use annotated as reference
-                'output_dir': seg_output_dir
-            }
-
-        except subprocess.TimeoutExpired:
-            print(f"  [ERROR] Segmentation timed out")
-            return None
-        except Exception as e:
-            print(f"  [ERROR] Segmentation error: {e}")
-            return None
     
-    def _edit_with_nanobanana(self, original_image, highlight_image, recommendation, iteration):
+    def _edit_with_nanobanana(self, current_image, item_name, recommendation, iteration):
         """
-        Edit image using Nano Banana by calling nanobanana_edit.py.
+        Edit image using Nano Banana Pro (Gemini 3 Pro) by calling nanobanana_edit.py.
+
+        Note: This version does not require segmentation. The item name is added
+              directly to the prompt to guide the AI on what to focus on.
 
         Args:
-            original_image: Path to current clean image (to be edited)
-            highlight_image: Path to highlight/mask image (shows what to edit)
+            current_image: Path to current image (to be edited)
+            item_name: Name of the item to focus on (e.g., "Wall paint", "Floor rug")
             recommendation: Text recommendation for edit
             iteration: Current iteration number
 
         Returns:
             Path to edited image, or None if failed
         """
-        # Create prompt JSON
-        nb_prompt_path = self.intermediate_dir / f"nb_prompt_{iteration:02d}.json"
-        enhanced_prompt = f"Based on the highlighted areas in the reference image: {recommendation}"
+        # Copy current image to intermediate directory for tracking
+        intermediate_image = self.intermediate_dir / f"current_{iteration:02d}.jpg"
+        shutil.copy(current_image, intermediate_image)
 
-        # Use absolute paths for the reference image
+        # Create enhanced prompt with item name as object of attention
+        # Following the new format: "The object of attention is {item name}. {recommendation}."
+        enhanced_prompt = f"The object of attention is {item_name}. {recommendation}. Keep the perspective of the image identical."
+
+        # Create prompt JSON (no reference image needed)
+        nb_prompt_path = self.intermediate_dir / f"nb_prompt_{iteration:02d}.json"
         nb_prompt_data = {
-            "prompt": enhanced_prompt,
-            "reference_image": str(highlight_image.resolve())  # Convert to absolute path
+            "prompt": enhanced_prompt
         }
 
         with open(nb_prompt_path, 'w') as f:
             json.dump(nb_prompt_data, f, indent=2)
 
-        print(f"  Calling Nano Banana API...")
+        print(f"  Calling Nano Banana Pro API...")
+        print(f"  Item: {item_name}")
         print(f"  Prompt: {enhanced_prompt}")
 
         # Output path
@@ -277,7 +189,7 @@ class ImageTransformer:
                 [
                     sys.executable,
                     str(nanobanana_script),  # Use absolute path
-                    str(original_image.resolve()),  # Absolute path to input image
+                    str(intermediate_image.resolve()),  # Absolute path to input image
                     str(nb_prompt_path.resolve()),  # Absolute path to prompt JSON
                     str(edited_path.resolve())  # Absolute path to output image
                 ],
@@ -286,11 +198,11 @@ class ImageTransformer:
                 text=True,
                 env=env,
                 cwd=str(script_dir),  # Run in picture-generation directory for relative imports
-                timeout=180
+                timeout=240  # Increased timeout for Gemini 3 Pro
             )
 
             if result.returncode != 0:
-                print(f"  [ERROR] Nano Banana failed (return code: {result.returncode})")
+                print(f"  [ERROR] Nano Banana Pro failed (return code: {result.returncode})")
                 print(f"  STDERR: {result.stderr}")
                 return None
 
@@ -302,10 +214,10 @@ class ImageTransformer:
             return edited_path
 
         except subprocess.TimeoutExpired:
-            print(f"  [ERROR] Nano Banana timed out")
+            print(f"  [ERROR] Nano Banana Pro timed out")
             return None
         except Exception as e:
-            print(f"  [ERROR] Nano Banana error: {e}")
+            print(f"  [ERROR] Nano Banana Pro error: {e}")
             return None
     
     def _cleanup(self):
@@ -332,6 +244,9 @@ def main():
         print("  python transform_image.py room.jpg image_editing_prompts.json")
         print("  python transform_image.py room.jpg prompts.json final_room.jpg")
         print("  python transform_image.py room.jpg prompts.json final.jpg --keep-intermediates")
+        print("\nNote: This version uses Gemini 3 Pro Image Preview (Nano Banana Pro)")
+        print("      and does NOT require segmentation. The item name is included")
+        print("      in the prompt to guide the AI on what to focus on.")
         print("\nInput Format (editing_prompts.json):")
         print('''{
   "analysis_summary": {"total_issues": 3},
