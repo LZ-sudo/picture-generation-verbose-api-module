@@ -3,21 +3,18 @@ Picture Generation Microservice API
 ====================================
 FastAPI server for image transformation only.
 Uses asyncio subprocess to avoid threading deadlocks with nested subprocesses.
-Supports async job pattern (primary) with sync fallback for compatibility.
 """
 
 import os
 import sys
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional
 import json
 from datetime import datetime
 import asyncio
-import uuid
-from enum import Enum
 
-from fastapi import FastAPI, HTTPException, File, UploadFile, Body, BackgroundTasks
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import FastAPI, HTTPException, File, UploadFile, Body
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 import uvicorn
 
@@ -31,18 +28,9 @@ if env_path.exists():
 # Initialize FastAPI app
 app = FastAPI(
     title="Picture Generation Service",
-    description="Image transformation based on JSON recommendations (Async + Sync modes)",
-    version="2.0.0"
+    description="Image transformation based on JSON recommendations",
+    version="1.0.0"
 )
-
-# Job storage (in-memory for now, could be Redis in production)
-class JobStatus(str, Enum):
-    PENDING = "pending"
-    PROCESSING = "processing"
-    COMPLETED = "completed"
-    FAILED = "failed"
-
-jobs: Dict[str, Dict[str, Any]] = {}
 
 
 class TransformResponse(BaseModel):
@@ -52,30 +40,11 @@ class TransformResponse(BaseModel):
     error: Optional[str] = None
 
 
-class JobSubmitResponse(BaseModel):
-    """Response when submitting async job"""
-    job_id: str
-    status: str
-    message: str
-
-
-class JobStatusResponse(BaseModel):
-    """Response for job status check"""
-    job_id: str
-    status: str
-    progress: Optional[str] = None
-    result: Optional[TransformResponse] = None
-    error: Optional[str] = None
-    created_at: Optional[str] = None
-    completed_at: Optional[str] = None
-
-
 class HealthResponse(BaseModel):
     """Health check response"""
     status: str
     service: str
     version: str
-    async_mode: bool = True
 
 
 @app.get("/", response_model=HealthResponse)
@@ -84,8 +53,7 @@ async def root():
     return {
         "status": "running",
         "service": "Picture Generation",
-        "version": "2.0.0",
-        "async_mode": True
+        "version": "1.0.0"
     }
 
 
@@ -103,35 +71,34 @@ async def health_check():
     return {
         "status": "healthy",
         "service": "Picture Generation",
-        "version": "2.0.0",
-        "async_mode": True
+        "version": "1.0.0"
     }
 
 
-async def run_transformation(
-    image_content: bytes,
-    filename: str,
-    analysis_data: dict,
-    job_id: Optional[str] = None
-) -> TransformResponse:
+@app.post("/transform", response_model=TransformResponse)
+async def transform_image(
+    file: UploadFile = File(...),
+    analysis_json: str = Body(...)
+):
     """
-    Core transformation logic (used by both sync and async endpoints).
+    Transform an image based on JSON analysis recommendations.
+    Uses asyncio subprocess to run transform_image.py as isolated process.
 
     Args:
-        image_content: Image file bytes
-        filename: Original filename
-        analysis_data: Parsed analysis JSON
-        job_id: Optional job ID for tracking
+        file: Original image file
+        analysis_json: JSON string containing issues with recommendations
 
     Returns:
-        TransformResponse with result or error
+        Path to transformed image
     """
     temp_original = None
     temp_json_file = None
     output_file = None
 
     try:
-        # Validate JSON structure
+        # Parse and validate JSON
+        analysis_data = json.loads(analysis_json)
+
         if "issues" not in analysis_data:
             raise ValueError("JSON must contain 'issues' array")
 
@@ -142,22 +109,22 @@ async def run_transformation(
         temp_dir.mkdir(parents=True, exist_ok=True)
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S%f")
-        job_prefix = f"{job_id}_" if job_id else ""
 
         # Save uploaded image
-        temp_original = temp_dir / f"original_{job_prefix}{timestamp}_{filename}"
+        temp_original = temp_dir / f"original_{timestamp}_{file.filename}"
         with open(temp_original, "wb") as f:
-            f.write(image_content)
+            content = await file.read()
+            f.write(content)
 
         # Save JSON to file
-        temp_json_file = temp_dir / f"prompts_{job_prefix}{timestamp}.json"
+        temp_json_file = temp_dir / f"prompts_{timestamp}.json"
         with open(temp_json_file, "w") as f:
             json.dump(analysis_data, f, indent=2)
 
         # Output path
-        output_file = temp_dir / f"transformed_{job_prefix}{timestamp}.jpg"
+        output_file = temp_dir / f"transformed_{timestamp}.jpg"
 
-        print(f"Transform request {'[Job: ' + job_id + ']' if job_id else ''} received:")
+        print(f"Transform request received:")
         print(f"  Input: {temp_original}")
         print(f"  Prompts: {temp_json_file}")
         print(f"  Output: {output_file}")
@@ -176,11 +143,6 @@ async def run_transformation(
             raise RuntimeError(f"Virtual environment not found at {venv_dir}")
 
         transform_script = script_dir / "transform_image.py"
-
-        # Update job status if async
-        if job_id and job_id in jobs:
-            jobs[job_id]["status"] = JobStatus.PROCESSING
-            jobs[job_id]["progress"] = "Running transformation subprocess..."
 
         # Run transform_image.py as isolated subprocess using asyncio
         print(f"Starting transformation subprocess...")
@@ -221,19 +183,24 @@ async def run_transformation(
 
         print(f"[OK] Transformation complete: {output_file}")
 
-        return TransformResponse(
-            success=True,
-            transformed_image_path=str(output_file)
-        )
+        return {
+            "success": True,
+            "transformed_image_path": str(output_file)
+        }
 
+    except json.JSONDecodeError as e:
+        return {
+            "success": False,
+            "error": f"Invalid JSON: {str(e)}"
+        }
     except Exception as e:
         import traceback
         error_detail = f"{str(e)}\n{traceback.format_exc()}"
-        print(f"ERROR in transformation: {error_detail}")
-        return TransformResponse(
-            success=False,
-            error=error_detail
-        )
+        print(f"ERROR in transform endpoint: {error_detail}")
+        return {
+            "success": False,
+            "error": error_detail
+        }
 
     finally:
         # Clean up temp input files (keep output for download)
@@ -247,166 +214,6 @@ async def run_transformation(
                 temp_json_file.unlink()
             except:
                 pass
-
-
-@app.post("/transform", response_model=TransformResponse)
-async def transform_image_sync(
-    file: UploadFile = File(...),
-    analysis_json: str = Body(...)
-):
-    """
-    LEGACY SYNC ENDPOINT: Transform an image (blocking, for localhost use).
-    For tunnel/production use, prefer /transform/async endpoint.
-
-    Args:
-        file: Original image file
-        analysis_json: JSON string containing issues with recommendations
-
-    Returns:
-        Path to transformed image (waits for completion)
-    """
-    try:
-        # Parse and validate JSON
-        analysis_data = json.loads(analysis_json)
-
-        # Read file content
-        content = await file.read()
-
-        # Run transformation using shared logic
-        result = await run_transformation(
-            image_content=content,
-            filename=file.filename or "image.jpg",
-            analysis_data=analysis_data,
-            job_id=None
-        )
-
-        return result
-
-    except json.JSONDecodeError as e:
-        return TransformResponse(
-            success=False,
-            error=f"Invalid JSON: {str(e)}"
-        )
-    except Exception as e:
-        import traceback
-        error_detail = f"{str(e)}\n{traceback.format_exc()}"
-        print(f"ERROR in transform endpoint: {error_detail}")
-        return TransformResponse(
-            success=False,
-            error=error_detail
-        )
-
-
-@app.post("/transform/async", response_model=JobSubmitResponse)
-async def transform_image_async(
-    background_tasks: BackgroundTasks,
-    file: UploadFile = File(...),
-    analysis_json: str = Body(...)
-):
-    """
-    ASYNC ENDPOINT: Submit transformation job (returns immediately with job_id).
-    Use /transform/status/{job_id} to poll for completion.
-    Recommended for tunnel/production use to avoid gateway timeouts.
-
-    Args:
-        background_tasks: FastAPI background tasks
-        file: Original image file
-        analysis_json: JSON string containing issues with recommendations
-
-    Returns:
-        Job ID for polling status
-    """
-    try:
-        # Parse and validate JSON
-        analysis_data = json.loads(analysis_json)
-
-        # Generate unique job ID
-        job_id = str(uuid.uuid4())
-
-        # Read file content
-        content = await file.read()
-
-        # Create job record
-        jobs[job_id] = {
-            "job_id": job_id,
-            "status": JobStatus.PENDING,
-            "progress": "Job queued",
-            "result": None,
-            "error": None,
-            "created_at": datetime.now().isoformat(),
-            "completed_at": None
-        }
-
-        # Schedule background task
-        async def process_job():
-            try:
-                result = await run_transformation(
-                    image_content=content,
-                    filename=file.filename or "image.jpg",
-                    analysis_data=analysis_data,
-                    job_id=job_id
-                )
-
-                # Update job with result
-                jobs[job_id]["status"] = JobStatus.COMPLETED if result.success else JobStatus.FAILED
-                jobs[job_id]["result"] = result
-                jobs[job_id]["error"] = result.error
-                jobs[job_id]["completed_at"] = datetime.now().isoformat()
-                jobs[job_id]["progress"] = "Transformation complete" if result.success else "Transformation failed"
-
-            except Exception as e:
-                import traceback
-                error_detail = f"{str(e)}\n{traceback.format_exc()}"
-                jobs[job_id]["status"] = JobStatus.FAILED
-                jobs[job_id]["error"] = error_detail
-                jobs[job_id]["completed_at"] = datetime.now().isoformat()
-                jobs[job_id]["progress"] = "Job failed with exception"
-
-        # Add to background tasks
-        background_tasks.add_task(process_job)
-
-        print(f"[ASYNC] Job {job_id} submitted for transformation")
-
-        return JobSubmitResponse(
-            job_id=job_id,
-            status=JobStatus.PENDING,
-            message=f"Transformation job submitted. Poll /transform/status/{job_id} for progress."
-        )
-
-    except json.JSONDecodeError as e:
-        raise HTTPException(status_code=400, detail=f"Invalid JSON: {str(e)}")
-    except Exception as e:
-        import traceback
-        error_detail = f"{str(e)}\n{traceback.format_exc()}"
-        print(f"ERROR in async transform endpoint: {error_detail}")
-        raise HTTPException(status_code=500, detail=error_detail)
-
-
-@app.get("/transform/status/{job_id}", response_model=JobStatusResponse)
-async def get_transformation_status(job_id: str):
-    """
-    Check status of async transformation job.
-
-    Args:
-        job_id: Job ID returned from /transform/async
-
-    Returns:
-        Current job status and result (if completed)
-    """
-    if job_id not in jobs:
-        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
-
-    job = jobs[job_id]
-
-    return JobStatusResponse(
-        job_id=job["job_id"],
-        status=job["status"],
-        progress=job.get("progress"),
-        result=job.get("result"),
-        error=job.get("error"),
-        created_at=job.get("created_at"),
-        completed_at=job.get("completed_at")
-    )
 
 
 @app.get("/download/{filename}")
