@@ -83,30 +83,25 @@ class ImageTransformer:
                 print(f"\n{'─'*70}")
                 print(f"Processing Issue {i}/{len(self.issues)}: {issue['item']}")
                 print(f"{'─'*70}")
-                
-                # Step 1: Segment the item
-                print(f"\n[Step 1/3] Segmenting {issue['item']}...")
-                segmentation_result = self._segment_item(current_image, issue['item'], i)
-                
-                if not segmentation_result:
-                    print(f"⚠ Warning: Segmentation failed for {issue['item']}, skipping...")
-                    continue
-                
-                # Step 2: Edit with Nano Banana
-                print(f"\n[Step 2/3] Applying edit with Nano Banana...")
-                edited_image = self._edit_with_nanobanana(
-                    segmentation_result['original_image'],
-                    segmentation_result['highlight_image'],
+
+                # TEMPORARY: Skip segmentation, go straight to Nano Banana
+                print(f"\n⚠ SKIPPING SEGMENTATION - Going directly to Nano Banana")
+
+                # Step 1: Edit with Nano Banana (without segmentation)
+                print(f"\n[Step 1/2] Applying edit with Nano Banana...")
+                edited_image = self._edit_with_nanobanana_no_segmentation(
+                    current_image,
+                    issue['item'],
                     issue['recommendation'],
                     i
                 )
-                
+
                 if not edited_image:
                     print(f"⚠ Warning: Nano Banana edit failed for {issue['item']}, skipping...")
                     continue
-                
-                # Step 3: Update current image for next iteration
-                print(f"\n[Step 3/3] Updating current image state...")
+
+                # Step 2: Update current image for next iteration
+                print(f"\n[Step 2/2] Updating current image state...")
                 current_image = edited_image
                 print(f"✓ Issue {i} completed successfully")
             
@@ -220,6 +215,78 @@ class ImageTransformer:
             print(f"  [ERROR] Segmentation error: {e}")
             return None
     
+    def _edit_with_nanobanana_no_segmentation(self, original_image, item_name, recommendation, iteration):
+        """
+        Edit image using Nano Banana WITHOUT segmentation (TEMPORARY BYPASS).
+
+        Args:
+            original_image: Path to current image (to be edited)
+            item_name: Name of item to edit
+            recommendation: Text recommendation for edit
+            iteration: Current iteration number
+
+        Returns:
+            Path to edited image, or None if failed
+        """
+        # Create prompt JSON without reference image
+        nb_prompt_path = self.intermediate_dir / f"nb_prompt_{iteration:02d}.json"
+        # Combine item name and recommendation in prompt
+        direct_prompt = f"For the {item_name}: {recommendation}"
+
+        nb_prompt_data = {
+            "prompt": direct_prompt
+            # No reference_image field
+        }
+
+        with open(nb_prompt_path, 'w') as f:
+            json.dump(nb_prompt_data, f, indent=2)
+
+        print(f"  Calling Nano Banana API (no segmentation)...")
+        print(f"  Item: {item_name}")
+        print(f"  Prompt: {direct_prompt}")
+
+        # Output path
+        edited_path = self.intermediate_dir / f"edited_{iteration:02d}.jpg"
+
+        try:
+            # Create environment with UTF-8 encoding
+            env = os.environ.copy()
+            env['PYTHONIOENCODING'] = 'utf-8'
+
+            # Call nanobanana_edit.py script
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    'nanobanana_edit.py',
+                    str(original_image),
+                    str(nb_prompt_path),
+                    str(edited_path)
+                ],
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=180
+            )
+
+            if result.returncode != 0:
+                print(f"  [ERROR] Nano Banana failed (return code: {result.returncode})")
+                print(f"  STDERR: {result.stderr}")
+                return None
+
+            if not edited_path.exists():
+                print(f"  [ERROR] Edited image not found")
+                return None
+
+            print(f"  [OK] Edit complete: {edited_path}")
+            return edited_path
+
+        except subprocess.TimeoutExpired:
+            print(f"  [ERROR] Nano Banana timed out")
+            return None
+        except Exception as e:
+            print(f"  [ERROR] Nano Banana error: {e}")
+            return None
+
     def _edit_with_nanobanana(self, original_image, highlight_image, recommendation, iteration):
         """
         Edit image using Nano Banana by calling nanobanana_edit.py.
